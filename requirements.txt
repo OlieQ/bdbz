@@ -1,0 +1,5 @@
+# 变电设备图像缺陷标注工具 依赖
+# 用于 Windows 上打包成 exe（pyinstaller）
+tkinterdnd2>=0.3
+Pillow>=9.0
+pyinstaller>=5.0
