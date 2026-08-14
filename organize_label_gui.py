@@ -6,7 +6,7 @@
 交互方式：
   1. 点“选择文件夹…”：选一个放满待标注图片的目录（也可把图片拖到左侧预览区）
   2. 自动显示第一张（小缩略图 + 完整路径）；右侧用「点选列表」选
-     设备类型(10类) / 缺陷主标签(6类) / 严重程度 / 遮挡程度（细粒度可填）
+     设备类型(10类) / 缺陷主标签(11类) / 严重程度 / 遮挡程度（细粒度可填）
   3. 点“保存并下一张”：当前图片重命名 IMG_<设备类型2位>_<4位序号>.jpg，
      复制到 dataset/images/，并向 dataset/labels.csv 追加一行，然后显示下一张
   4. 最后一张处理完提示完成；支持增量（再选文件夹或拖入新图，序号自动续接）
@@ -54,7 +54,9 @@ EQUIP_TYPES = [
     "变压器", "断路器", "GIS", "电流互感器", "电压互感器",
     "避雷器", "隔离开关", "电抗器", "绝缘子", "电容器",
 ]
-# 缺陷主标签：6 类（码值=下标+1），英文名用于写入 CSV
+# 缺陷主标签：11 类（码值=下标+1），英文名用于写入 CSV
+# 前 6 类是测评规范编码；后 5 类（contamination/loose_deformation/foreign_object/
+# reading_abnormal/switch_abnormal）为按实际数据补充的细分标签，提交测评前可按需映射回规范 6 类。
 DEFECT_LABELS = [
     ("normal", "正常"),
     ("oil_leak", "渗漏油"),
@@ -62,6 +64,11 @@ DEFECT_LABELS = [
     ("visible_damage", "外观破损"),
     ("birdnest", "鸟窝"),
     ("silica_gel_discoloration", "呼吸器硅胶变色"),
+    ("contamination", "污秽"),
+    ("loose_deformation", "松动变形"),
+    ("foreign_object", "异物"),
+    ("reading_abnormal", "读数异常"),
+    ("switch_abnormal", "开关异常"),
 ]
 SEVERITY = ["未标注", "轻微", "一般", "严重", "紧急"]          # 码值=下标
 OCCLUSION = ["无遮挡", "轻度", "中度", "重度"]                  # 码值=下标
@@ -259,9 +266,9 @@ class LabelApp(TkinterDnD.Tk):
         self.equip_lb.grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
         # 缺陷主标签
-        ttk.Label(right, text="缺陷主标签（6类）", font=("", 11, "bold")).grid(
+        ttk.Label(right, text="缺陷主标签（11类）", font=("", 11, "bold")).grid(
             row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
-        self.defect_lb = tk.Listbox(right, height=6, exportselection=False, width=22)
+        self.defect_lb = tk.Listbox(right, height=11, exportselection=False, width=22)
         for _, name in DEFECT_LABELS:
             self.defect_lb.insert("end", name)
         self.defect_lb.selection_set(0)
@@ -339,21 +346,27 @@ class LabelApp(TkinterDnD.Tk):
     # ---- 按路径推断缺陷主标签下标（0-based；返回 -1 表示无法判断、需人工确认） ----
     # 规则：
     #  - 路径含“负样本/正常” -> normal；
-    #  - 否则按“细粒度”文件夹名里的缺陷关键词映射到 6 类缺陷主标签。
+    #  - 否则按“细粒度”文件夹名里的缺陷关键词映射到 11 类缺陷主标签。
     # 关键词取最长命中，降低误判（如“锈蚀渗漏”优先匹配更具体的词）。
     # 兼容“没有 正样本/负样本 层级”的设备目录（如避雷器）：
     #   这类目录的缺陷直接写在细粒度文件夹名里，同样靠关键词判断。
+    # 注意：birdnest 规则须排在 foreign_object 之前（“异物鸟巢”要判为鸟巢）；
+    #      visible_damage 规则须排在 loose_deformation 之前（“破损变形”判为破损）。
     def _derive_defect(self, src):
         if "负样本" in src or "正常" in src:
             return 0  # normal
         rules = [
-            (1, ("渗漏", "漏油", "渗油")),                          # oil_leak
-            (2, ("锈蚀", "腐蚀")),                                   # corrosion
-            (3, ("破损", "裂纹", "损坏", "断裂",                     # visible_damage
-                 "断股", "松股", "松动", "污秽",
-                 "模糊", "悬浮物", "挂空")),
-            (4, ("鸟窝", "鸟巢")),                                   # birdnest
-            (5, ("硅胶", "呼吸器", "变色")),                           # silica_gel_discoloration
+            (1, ("渗漏", "漏油", "渗油", "油流")),            # oil_leak
+            (2, ("锈蚀", "腐蚀")),                             # corrosion
+            (4, ("鸟窝", "鸟巢")),                             # birdnest
+            (5, ("硅胶变色",)),                                 # silica_gel_discoloration
+            (6, ("污秽", "积尘", "污染")),                      # contamination
+            (9, ("读数", "油位", "指示灯")),                    # reading_abnormal
+            (10, ("分合闸", "空开")),                          # switch_abnormal（不用“开关”，避免误伤“隔离开关”）
+            (3, ("破损", "裂纹", "损坏", "断裂", "破碎",
+                 "冲顶", "模糊", "箱门")),                      # visible_damage
+            (7, ("松动", "松股", "断股", "变形", "鼓肚")),       # loose_deformation
+            (8, ("挂空", "悬浮物", "异物")),                    # foreign_object
         ]
         best, best_len = -1, 0
         for code, kws in rules:
