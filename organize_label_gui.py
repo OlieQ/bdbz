@@ -47,6 +47,7 @@ else:
 OUTPUT_IMG_DIR = os.path.join(BASE_DIR, "dataset", "images")
 LABELS_CSV = os.path.join(BASE_DIR, "dataset", "labels.csv")
 PREVIEW_MAX = 920            # 预览图最大边长(px)，约铺满屏幕左半边
+APP_VERSION = "v2.1-11类"   # 界面/窗口标题可见，便于核对运行的是否最新版
 # =================================================
 
 # 设备类型：10 类（顺序即列表下标，码值=下标+1）
@@ -210,7 +211,7 @@ def parse_annotation(xml_path):
 class LabelApp(TkinterDnD.Tk):
     def __init__(self):
         super().__init__()
-        self.title("变电设备图像缺陷标注工具  (能源局场景5测评)")
+        self.title(f"变电设备图像缺陷标注工具 {APP_VERSION}  (能源局场景5测评)")
         self.geometry("1500x960")
         self.resizable(True, True)
 
