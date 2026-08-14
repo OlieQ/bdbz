@@ -47,7 +47,7 @@ else:
 OUTPUT_IMG_DIR = os.path.join(BASE_DIR, "dataset", "images")
 LABELS_CSV = os.path.join(BASE_DIR, "dataset", "labels.csv")
 PREVIEW_MAX = 920            # 预览图最大边长(px)，约铺满屏幕左半边
-APP_VERSION = "v2.1-11类"   # 界面/窗口标题可见，便于核对运行的是否最新版
+APP_VERSION = "v2.2-11类"   # 界面/窗口标题可见，便于核对运行的是否最新版
 # =================================================
 
 # 设备类型：10 类（顺序即列表下标，码值=下标+1）
@@ -529,15 +529,43 @@ class LabelApp(TkinterDnD.Tk):
         sev = self._sel(self.sev_lb, 0)
         occ = self._sel(self.occ_lb, 0)
 
-        seq = get_next_seq()
-        new_name, image_id = save_image(src, et, seq)
-        append_row([image_id, f"images/{new_name}", et, label_primary,
-                    secondary, sev, occ])
+        try:
+            # 每次保存前都确保输出目录/表头存在（防止被移动/清理）
+            os.makedirs(OUTPUT_IMG_DIR, exist_ok=True)
+            ensure_header()
+            seq = get_next_seq()
+            new_name, image_id = save_image(src, et, seq)
+            append_row([image_id, f"images/{new_name}", et, label_primary,
+                        secondary, sev, occ])
+        except PermissionError:
+            self._log_error(src, "PermissionError：文件被占用或无写权限")
+            messagebox.showerror(
+                "保存失败（无法写入）",
+                "写入 dataset/labels.csv 或 images/ 失败。\n"
+                "常见原因：① labels.csv 正被 Excel 等程序打开占用；② exe 所在目录没有写权限。\n\n"
+                "请：关闭 Excel 后重试；或把 exe 移动到桌面/普通文件夹（不要放 Program Files 或只读目录）再运行。")
+            return
+        except Exception as e:
+            self._log_error(src, f"{type(e).__name__}: {e}")
+            messagebox.showerror(
+                "保存失败",
+                f"保存时发生错误：{type(e).__name__}: {e}\n\n"
+                f"源文件：{src}\n\n详细日志：{BASE_DIR}/labeltool_error.log")
+            return
         self.done += 1
         self.status_lbl.configure(
             text=f"已保存：{new_name} (设备{et} | {label_primary})")
         self.index += 1
         self._load_current()
+
+    def _log_error(self, src, msg):
+        """把错误写入 exe/脚本 同级的 labeltool_error.log，便于定位。"""
+        try:
+            with open(os.path.join(BASE_DIR, "labeltool_error.log"),
+                      "a", encoding="utf-8") as f:
+                f.write(f"[{__import__('datetime').datetime.now()}] {msg}\n  源: {src}\n")
+        except Exception:
+            pass
 
     # ---- 跳过当前并前进 ----
     def skip(self):
