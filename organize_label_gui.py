@@ -47,7 +47,7 @@ else:
 OUTPUT_IMG_DIR = os.path.join(BASE_DIR, "dataset", "images")
 LABELS_CSV = os.path.join(BASE_DIR, "dataset", "labels.csv")
 PREVIEW_MAX = 920            # 预览图最大边长(px)，约铺满屏幕左半边
-APP_VERSION = "v2.2-11类"   # 界面/窗口标题可见，便于核对运行的是否最新版
+APP_VERSION = "v2.3-11类"   # 界面/窗口标题可见，便于核对运行的是否最新版
 # =================================================
 
 # 设备类型：10 类（顺序即列表下标，码值=下标+1）
@@ -93,10 +93,23 @@ def get_next_seq():
 
 
 def ensure_header():
+    """确保 CSV 存在且带 BOM 表头（Excel 打开中文不乱码的关键）。"""
     os.makedirs(os.path.dirname(LABELS_CSV), exist_ok=True)
     if not os.path.exists(LABELS_CSV):
         with open(LABELS_CSV, "w", newline="", encoding="utf-8-sig") as f:
             csv.writer(f).writerow(CSV_HEADER)
+    else:
+        # 文件已存在：若开头没有 BOM，则重写补上（数据不变）
+        try:
+            with open(LABELS_CSV, "rb") as f:
+                head = f.read(3)
+            if head != b"\xef\xbb\xbf":
+                with open(LABELS_CSV, "r", encoding="utf-8") as f:
+                    data = f.read()
+                with open(LABELS_CSV, "w", newline="", encoding="utf-8-sig") as f:
+                    f.write(data)
+        except Exception:
+            pass  # 补 BOM 失败不影响后续写入
 
 
 def append_row(row):
