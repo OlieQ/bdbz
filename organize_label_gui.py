@@ -14,7 +14,8 @@
 说明：
   - 设备类型固定 10 类（码值见 EQUIP_TYPES）
   - CSV 以 utf-8-sig 写入（与测评系统示例一致，含 BOM）
-  - 预览用 Pillow 跨平台缩放（macOS / Windows 通用），仅作占位提示
+  - 预览优先用 Pillow 跨平台缩放；若环境无 Pillow（如本机 Mac 运行版），自动用
+    macOS 自带 sips 生成缩略图，保证看图功能正常。仅作占位提示
   - 仅复制原图到 dataset/images/，不会删除你的源文件
   - label 选择使用常显列表框（Listbox），避免与拖拽库冲突导致下拉框点不开
 """
@@ -23,6 +24,8 @@ import os
 import sys
 import csv
 import shutil
+import subprocess
+import tempfile
 import xml.etree.ElementTree as ET
 
 import tkinter as tk
@@ -106,27 +109,56 @@ def save_image(src, et, seq):
 
 
 def make_preview(src, max_side=PREVIEW_MAX):
-    """用 Pillow 把图片缩放到 max_side 以内（保持比例），返回缩放后的 PIL.Image。
-    跨平台（macOS / Windows 通用），替代 macOS 专属的 sips。"""
-    if Image is None:
-        return None
-    try:
-        img = Image.open(src)
-        img.thumbnail((max_side, max_side), Image.LANCZOS)
-        return img
-    except Exception:
-        return None
+    """返回用于显示的对象：PIL.Image（优先）或临时 gif 文件路径（macOS sips 兜底）。
+    两者都能直接交给 tk.PhotoImage。这样没装 Pillow 的 macOS 环境也能正常预览。"""
+    # 优先用 Pillow（Windows 打包版自带）
+    if Image is not None:
+        try:
+            img = Image.open(src)
+            img.thumbnail((max_side, max_side), Image.LANCZOS)
+            return img
+        except Exception:
+            pass
+    # 兜底：macOS 用系统自带 sips 缩放到临时 gif
+    if sys.platform == "darwin":
+        try:
+            tmp = tempfile.NamedTemporaryFile(suffix=".gif", delete=False)
+            tmp.close()
+            subprocess.run(
+                ["sips", "-Z", str(max_side), "-s", "format", "gif", src, "--out", tmp.name],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            return tmp.name
+        except Exception:
+            return None
+    return None
 
 
 def get_image_size(src):
-    """用 Pillow 查询原图像素宽高，返回 (w, h) 或 (None, None)。"""
-    if Image is None:
-        return None, None
-    try:
-        with Image.open(src) as im:
-            return im.size  # (width, height)
-    except Exception:
-        return None, None
+    """查询原图像素宽高，返回 (w, h) 或 (None, None)。
+    Pillow 可用时用 Pillow；否则 macOS 用 sips 兜底。"""
+    if Image is not None:
+        try:
+            with Image.open(src) as im:
+                return im.size  # (width, height)
+        except Exception:
+            pass
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(
+                ["sips", "-g", "pixelWidth", "-g", "pixelHeight", src],
+                capture_output=True, text=True).stdout
+            w = h = None
+            for line in out.splitlines():
+                line = line.strip()
+                if line.startswith("pixelWidth:"):
+                    w = int(line.split(":", 1)[1])
+                elif line.startswith("pixelHeight:"):
+                    h = int(line.split(":", 1)[1])
+            return w, h
+        except Exception:
+            return None, None
+    return None, None
 
 
 def find_xml(src):
@@ -182,6 +214,7 @@ class LabelApp(TkinterDnD.Tk):
         self.index = 0        # 当前正在处理的下标
         self.done = 0         # 已成功录入张数
         self._preview_img = None
+        self._secondary_manual = False   # 用户是否手动改过细粒度框（改过则保留其输入）
 
         self._build_widgets()
         self._load_current()
@@ -257,8 +290,11 @@ class LabelApp(TkinterDnD.Tk):
         ttk.Label(right, text="细粒度标签（可选；默认取路径中『设备类型+细粒度』那层文件夹名去掉前缀）").grid(
             row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
         self.secondary_var = tk.StringVar()
-        ttk.Entry(right, textvariable=self.secondary_var, width=34).grid(
-            row=7, column=0, columnspan=2, sticky="w")
+        self.secondary_entry = ttk.Entry(right, textvariable=self.secondary_var, width=34)
+        self.secondary_entry.grid(row=7, column=0, columnspan=2, sticky="w")
+        # 用户一旦在框里敲字，记为手动输入；此后不再用路径值覆盖
+        self.secondary_entry.bind(
+            "<KeyRelease>", lambda e: setattr(self, "_secondary_manual", True))
 
         # 进度
         self.progress_lbl = ttk.Label(right, text="", foreground="#0a6")
@@ -363,6 +399,7 @@ class LabelApp(TkinterDnD.Tk):
             self.status_lbl.configure(
                 text=self.status_lbl.cget("text") + "  ⚠缺陷主标签未识别，请手动选择")
         # 加载即回填默认 label_secondary 到输入框，让用户看到将写入的值
+        self._secondary_manual = False   # 新图片：重置手动标记，强制按路径重新推导
         self._refresh_secondary_default()
 
     # ---- 画布辅助 ----
@@ -385,10 +422,10 @@ class LabelApp(TkinterDnD.Tk):
     def _draw_preview(self, src):
         self._clear_canvas()
         ow, oh = get_image_size(src)      # 原图尺寸，用于把 XML 框坐标换算到预览
-        pil_img = make_preview(src)       # 已缩放到 PREVIEW_MAX 以内的 PIL.Image
-        if pil_img is None:
+        preview_obj = make_preview(src)   # PIL.Image 或 sips 生成的 gif 路径
+        if preview_obj is None:
             self.preview_canvas.configure(width=600, height=400, scrollregion=(0, 0, 600, 400))
-            self.preview_canvas.create_text(300, 200, text="预览生成失败（可能缺 Pillow 或图片损坏）",
+            self.preview_canvas.create_text(300, 200, text="预览生成失败（可能图片损坏）",
                 anchor="center", fill="#c00")
             self.status_lbl.configure(text="预览生成失败")
             return
@@ -398,7 +435,11 @@ class LabelApp(TkinterDnD.Tk):
         if ow and oh:
             scale = min(PREVIEW_MAX / ow, PREVIEW_MAX / oh)
 
-        img = ImageTk.PhotoImage(pil_img)
+        # 兼容两种来源：PIL.Image 用 ImageTk；sips 生成的 gif 路径用 tk.PhotoImage
+        if Image is not None and isinstance(preview_obj, Image.Image):
+            img = ImageTk.PhotoImage(preview_obj)
+        else:
+            img = tk.PhotoImage(file=preview_obj)
         self._preview_img = img
         dw, dh = img.width(), img.height()
         self.preview_canvas.configure(width=dw, height=dh, scrollregion=(0, 0, dw, dh))
@@ -429,6 +470,8 @@ class LabelApp(TkinterDnD.Tk):
     def _refresh_secondary_default(self):
         if self.index >= len(self.file_list):
             return
+        if self._secondary_manual:
+            return  # 用户手动改过细粒度框，保留其输入，不再用路径值覆盖
         src = self.file_list[self.index]
         dl = self._sel(self.defect_lb, 1)
         lp = DEFECT_LABELS[dl - 1][0]
@@ -437,9 +480,7 @@ class LabelApp(TkinterDnD.Tk):
 
     # ---- 计算 label_secondary ----
     def _derive_secondary(self, src, label_primary):
-        manual = self.secondary_var.get().strip()
-        if manual:
-            return manual
+        # 纯按路径推导（不读界面框内容，避免“上一张图残留值”被当成手动值而不更新）。
         # 与设备类型自动识别同一套逻辑：先识别设备类型，再取路径中
         # “该设备类型文件夹下的那一层”作为细粒度描述，并去掉设备类型前缀。
         # 例：…/电抗器/电抗器导电引线锈蚀接地引下线锈蚀/正样本/images/x.jpg
